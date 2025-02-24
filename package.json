@@ -1,0 +1,16 @@
+{
+    "name": "ws-coda-app",
+    "version": "1.0.0",
+    "description": "WebSocket to Coda updater",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "axios": "^1.6.7",
+        "ws": "^8.16.0"
+    },
+    "engines": {
+        "node": ">=14"
+    }
+}
