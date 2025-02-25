@@ -2,77 +2,169 @@ const WebSocket = require("ws");
 const axios = require("axios");
 const crypto = require("crypto");
 
-const baseWsUrl = "wss://ws.pionex.com/future/ws/v2"; // Futures endpoint
-const apiKey = process.env.PIONEX_API_KEY; // Your Pionex API key
-const apiSecret = process.env.PIONEX_API_SECRET; // Your Pionex API secret
+require("dotenv").config();
 
-// Function to generate authenticated WebSocket URL
+const privateWsUrl = "wss://ws.pionex.com/ws"; // Private stream for FILL and ORDER
+const publicWsUrl = "wss://ws.pionex.com/wsPub"; // Public stream for DEPTH
+const apiKey = process.env.PIONEX_API_KEY;
+const apiSecret = process.env.PIONEX_API_SECRET;
+
 function generateAuthWsUrl() {
-    const timestamp = Date.now().toString(); // Current timestamp in milliseconds
-    const params = [`key=${apiKey}`, `timestamp=${timestamp}`].sort(); // Sort alphabetically by key
+    const timestamp = Date.now().toString();
+    const params = [`key=${apiKey}`, `timestamp=${timestamp}`].sort();
     const queryString = params.join("&");
-    const pathUrl = `/future/ws/v2?${queryString}`;
+    const pathUrl = `/ws?${queryString}`;
     const signString = pathUrl + "websocket_auth";
     const signature = crypto
         .createHmac("sha256", apiSecret)
         .update(signString)
         .digest("hex");
-    return `${baseWsUrl}?${queryString}&signature=${signature}`;
+    console.log(
+        "Generated Private WS URL:",
+        `${privateWsUrl}?${queryString}&signature=${signature}`
+    );
+    return `${privateWsUrl}?${queryString}&signature=${signature}`;
 }
 
-// Connect to WebSocket with authenticated URL
-const wsUrl = generateAuthWsUrl();
-const ws = new WebSocket(wsUrl);
+// Private WebSocket for FILL and ORDER
+function createPrivateWebSocket() {
+    const wsUrl = generateAuthWsUrl();
+    const ws = new WebSocket(wsUrl);
 
-ws.on("open", () => {
-    console.log("Connected to Pionex Futures WebSocket");
-    // Subscribe to the FILL topic for futures
-    const subscribeMessage = {
-        op: "SUBSCRIBE",
-        topic: "FILL",
-        symbol: "*", // Wildcard for all futures symbols
-    };
-    ws.send(JSON.stringify(subscribeMessage));
-});
+    ws.on("open", () => {
+        console.log("Connected to Pionex Futures Private WebSocket");
+        // Subscribe to FILL
+        const fillSubscribe = {
+            op: "SUBSCRIBE",
+            topic: "FILL",
+            symbol: "PI_USDT_PERP",
+        };
+        ws.send(JSON.stringify(fillSubscribe));
+        // Subscribe to ORDER
+        const orderSubscribe = {
+            op: "SUBSCRIBE",
+            topic: "ORDER",
+            symbol: "PI_USDT_PERP",
+        };
+        ws.send(JSON.stringify(orderSubscribe));
+    });
 
-ws.on("message", async (data) => {
-    try {
-        const parsedData = JSON.parse(data);
-        console.log("Received:", parsedData);
+    ws.on("message", async (data) => {
+        try {
+            const parsedData = JSON.parse(data);
+            console.log("Private Received:", parsedData);
 
-        // Process only FILL messages
-        if (parsedData.topic === "FILL") {
-            const tradeData = parsedData.data;
-            await updateCodaTable({
-                symbol: tradeData.symbol,
-                side: tradeData.side,
-                price: tradeData.price,
-                size: tradeData.size,
-                fee: tradeData.fee,
-                id: tradeData.id.toString(),
-                order_id: tradeData.orderId.toString(),
-            });
+            if (parsedData.op === "PING") {
+                const pong = { op: "PONG", timestamp: parsedData.timestamp };
+                ws.send(JSON.stringify(pong));
+                console.log("Private Sent PONG:", pong);
+                return;
+            }
+
+            if (parsedData.type === "SUBSCRIBED") {
+                console.log(
+                    `Private Successfully subscribed to ${parsedData.topic} for ${parsedData.symbol}`
+                );
+                return;
+            }
+
+            if (parsedData.topic === "FILL") {
+                const tradeData = parsedData.data;
+                if (!tradeData) {
+                    console.error("No data in FILL message:", parsedData);
+                    return;
+                }
+                await updateCodaTable({
+                    symbol: tradeData.symbol,
+                    side: tradeData.side,
+                    price: tradeData.price,
+                    size: tradeData.size,
+                    fee: tradeData.fee,
+                    id: tradeData.id.toString(),
+                    order_id: tradeData.orderId.toString(),
+                });
+            }
+
+            if (parsedData.topic === "ORDER") {
+                console.log("Order update:", parsedData.data);
+                // Add Coda logic here if desired
+            }
+
+            if (parsedData.type === "ERROR") {
+                console.error("Private Server error:", parsedData);
+            }
+        } catch (error) {
+            console.error("Private Error processing message:", error);
         }
-    } catch (error) {
-        console.error("Error processing message:", error);
-    }
-});
+    });
 
-ws.on("error", (err) => console.error("WebSocket error:", err));
-ws.on("close", () => {
-    console.log("WebSocket closed, reconnecting...");
-    setTimeout(() => reconnect(), 5000); // Reconnect after 5s
-});
+    ws.on("error", (err) => console.error("Private WebSocket error:", err));
+    ws.on("close", () => {
+        console.log("Private WebSocket closed, reconnecting...");
+        setTimeout(createPrivateWebSocket, 5000);
+    });
 
-// Reconnection logic
-function reconnect() {
-    const newWsUrl = generateAuthWsUrl(); // Regenerate URL with fresh timestamp
-    const newWs = new WebSocket(newWsUrl);
-    newWs.on("open", ws.onopen);
-    newWs.on("message", ws.onmessage);
-    newWs.on("error", ws.onerror);
-    newWs.on("close", ws.onclose);
+    return ws;
 }
+
+// Public WebSocket for DEPTH
+function createPublicWebSocket() {
+    const ws = new WebSocket(publicWsUrl);
+
+    ws.on("open", () => {
+        console.log("Connected to Pionex Public WebSocket");
+        const subscribeMessage = {
+            op: "SUBSCRIBE",
+            topic: "DEPTH",
+            symbol: "PI_USDT_PERP",
+            limit: 10,
+        };
+        ws.send(JSON.stringify(subscribeMessage));
+    });
+
+    ws.on("message", async (data) => {
+        try {
+            const parsedData = JSON.parse(data);
+            console.log("Public Received:", parsedData);
+
+            if (parsedData.op === "PING") {
+                const pong = { op: "PONG", timestamp: parsedData.timestamp };
+                ws.send(JSON.stringify(pong));
+                console.log("Public Sent PONG:", pong);
+                return;
+            }
+
+            if (parsedData.type === "SUBSCRIBED") {
+                console.log(
+                    `Public Successfully subscribed to ${parsedData.topic} for ${parsedData.symbol}`
+                );
+                return;
+            }
+
+            if (parsedData.topic === "DEPTH") {
+                console.log("Depth update:", parsedData.data);
+            }
+
+            if (parsedData.type === "ERROR") {
+                console.error("Public Server error:", parsedData);
+            }
+        } catch (error) {
+            console.error("Public Error processing message:", error);
+        }
+    });
+
+    ws.on("error", (err) => console.error("Public WebSocket error:", err));
+    ws.on("close", () => {
+        console.log("Public WebSocket closed, reconnecting...");
+        setTimeout(createPublicWebSocket, 5000);
+    });
+
+    return ws;
+}
+
+// Start both WebSockets
+createPrivateWebSocket();
+//createPublicWebSocket();
 
 async function updateCodaTable(trade) {
     const url = `https://coda.io/apis/v1/docs/${process.env.CODA_DOC_ID}/tables/${process.env.CODA_TABLE_ID}/rows`;
@@ -95,7 +187,7 @@ async function updateCodaTable(trade) {
                 ],
             },
         ],
-        keyColumns: ["id"], // Unique key to upsert rows
+        keyColumns: ["id"],
     };
 
     try {
@@ -109,7 +201,6 @@ async function updateCodaTable(trade) {
     }
 }
 
-// Keep the process alive
 process.on("uncaughtException", (err) => {
     console.error("Uncaught exception:", err);
 });
