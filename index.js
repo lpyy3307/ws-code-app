@@ -37,14 +37,14 @@ function createPrivateWebSocket() {
         const fillSubscribe = {
             op: "SUBSCRIBE",
             topic: "FILL",
-            symbol: "PI_USDT_PERP",
+            symbol: process.env.SYMBOL,
         };
         ws.send(JSON.stringify(fillSubscribe));
         // Subscribe to ORDER
         const orderSubscribe = {
             op: "SUBSCRIBE",
             topic: "ORDER",
-            symbol: "PI_USDT_PERP",
+            symbol: process.env.SYMBOL,
         };
         ws.send(JSON.stringify(orderSubscribe));
     });
@@ -116,7 +116,7 @@ function createPublicWebSocket() {
         const subscribeMessage = {
             op: "SUBSCRIBE",
             topic: "DEPTH",
-            symbol: "PI_USDT_PERP",
+            symbol: process.env.SYMBOL,
             limit: 10,
         };
         ws.send(JSON.stringify(subscribeMessage));
