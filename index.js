@@ -1,6 +1,7 @@
 const WebSocket = require("ws");
 const axios = require("axios");
 const crypto = require("crypto");
+const http = require("http"); // Added for HTTP server
 
 require("dotenv").config();
 
@@ -8,6 +9,23 @@ const privateWsUrl = "wss://ws.pionex.com/ws"; // Private stream for FILL and OR
 const publicWsUrl = "wss://ws.pionex.com/wsPub"; // Public stream for DEPTH
 const apiKey = process.env.PIONEX_API_KEY;
 const apiSecret = process.env.PIONEX_API_SECRET;
+
+// HTTP server to satisfy Render's port-binding requirement
+const PORT = process.env.PORT || 3000; // Render provides PORT, fallback to 3000 for local testing
+const server = http.createServer((req, res) => {
+    if (req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("OK");
+    } else {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not Found");
+    }
+});
+
+// Start the HTTP server
+server.listen(PORT, () => {
+    console.log(`HTTP server listening on port ${PORT}`);
+});
 
 function generateAuthWsUrl() {
     const timestamp = Date.now().toString();
@@ -33,14 +51,12 @@ function createPrivateWebSocket() {
 
     ws.on("open", () => {
         console.log("Connected to Pionex Futures Private WebSocket");
-        // Subscribe to FILL
         const fillSubscribe = {
             op: "SUBSCRIBE",
             topic: "FILL",
             symbol: process.env.SYMBOL,
         };
         ws.send(JSON.stringify(fillSubscribe));
-        // Subscribe to ORDER
         const orderSubscribe = {
             op: "SUBSCRIBE",
             topic: "ORDER",
@@ -87,7 +103,6 @@ function createPrivateWebSocket() {
 
             if (parsedData.topic === "ORDER") {
                 console.log("Order update:", parsedData.data);
-                // Add Coda logic here if desired
             }
 
             if (parsedData.type === "ERROR") {
@@ -164,7 +179,8 @@ function createPublicWebSocket() {
 
 // Start both WebSockets
 createPrivateWebSocket();
-//createPublicWebSocket();
+// Uncomment if you want to use the public WebSocket
+// createPublicWebSocket();
 
 async function updateCodaTable(trade) {
     const url = `https://coda.io/apis/v1/docs/${process.env.CODA_DOC_ID}/tables/${process.env.CODA_TABLE_ID}/rows`;
