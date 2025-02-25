@@ -1,17 +1,17 @@
 const WebSocket = require("ws");
 const axios = require("axios");
 const crypto = require("crypto");
-const http = require("http"); // Added for HTTP server
+const http = require("http");
 
 require("dotenv").config();
 
-const privateWsUrl = "wss://ws.pionex.com/ws"; // Private stream for FILL and ORDER
-const publicWsUrl = "wss://ws.pionex.com/wsPub"; // Public stream for DEPTH
+const privateWsUrl = "wss://ws.pionex.com/ws";
+const apiBaseUrl = "https://api.pionex.com";
 const apiKey = process.env.PIONEX_API_KEY;
 const apiSecret = process.env.PIONEX_API_SECRET;
 
-// HTTP server to satisfy Render's port-binding requirement
-const PORT = process.env.PORT || 3000; // Render provides PORT, fallback to 3000 for local testing
+// HTTP server for Render Web Service requirement
+const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
     if (req.url === "/health") {
         res.writeHead(200, { "Content-Type": "text/plain" });
@@ -21,12 +21,11 @@ const server = http.createServer((req, res) => {
         res.end("Not Found");
     }
 });
-
-// Start the HTTP server
 server.listen(PORT, () => {
     console.log(`HTTP server listening on port ${PORT}`);
 });
 
+// Generate authenticated WebSocket URL
 function generateAuthWsUrl() {
     const timestamp = Date.now().toString();
     const params = [`key=${apiKey}`, `timestamp=${timestamp}`].sort();
@@ -37,35 +36,25 @@ function generateAuthWsUrl() {
         .createHmac("sha256", apiSecret)
         .update(signString)
         .digest("hex");
-    console.log(
-        "Generated Private WS URL:",
-        `${privateWsUrl}?${queryString}&signature=${signature}`
-    );
     return `${privateWsUrl}?${queryString}&signature=${signature}`;
 }
 
-// Private WebSocket for FILL and ORDER
+// Private WebSocket for ORDER (excluding FILL since we’re avoiding fills)
 function createPrivateWebSocket() {
     const wsUrl = generateAuthWsUrl();
     const ws = new WebSocket(wsUrl);
 
     ws.on("open", () => {
-        console.log("Connected to Pionex Futures Private WebSocket");
-        const fillSubscribe = {
-            op: "SUBSCRIBE",
-            topic: "FILL",
-            symbol: process.env.SYMBOL,
-        };
-        ws.send(JSON.stringify(fillSubscribe));
+        console.log("Connected to Pionex Private WebSocket");
         const orderSubscribe = {
             op: "SUBSCRIBE",
             topic: "ORDER",
-            symbol: process.env.SYMBOL,
+            symbol: "PI_USDT_PERP",
         };
         ws.send(JSON.stringify(orderSubscribe));
     });
 
-    ws.on("message", async (data) => {
+    ws.on("message", (data) => {
         try {
             const parsedData = JSON.parse(data);
             console.log("Private Received:", parsedData);
@@ -73,149 +62,116 @@ function createPrivateWebSocket() {
             if (parsedData.op === "PING") {
                 const pong = { op: "PONG", timestamp: parsedData.timestamp };
                 ws.send(JSON.stringify(pong));
-                console.log("Private Sent PONG:", pong);
+                console.log("Sent PONG:", pong);
                 return;
             }
 
             if (parsedData.type === "SUBSCRIBED") {
                 console.log(
-                    `Private Successfully subscribed to ${parsedData.topic} for ${parsedData.symbol}`
+                    `Successfully subscribed to ${parsedData.topic} for ${parsedData.symbol}`
                 );
                 return;
             }
 
-            if (parsedData.topic === "FILL") {
-                const tradeData = parsedData.data;
-                if (!tradeData) {
-                    console.error("No data in FILL message:", parsedData);
-                    return;
-                }
-                await updateCodaTable({
-                    symbol: tradeData.symbol,
-                    side: tradeData.side,
-                    price: tradeData.price,
-                    size: tradeData.size,
-                    fee: tradeData.fee,
-                    id: tradeData.id.toString(),
-                    order_id: tradeData.orderId.toString(),
-                });
-            }
-
             if (parsedData.topic === "ORDER") {
-                console.log("Order update:", parsedData.data);
+                console.log("Order update received:", parsedData.data);
             }
 
             if (parsedData.type === "ERROR") {
-                console.error("Private Server error:", parsedData);
+                console.error("Server error:", parsedData);
             }
         } catch (error) {
-            console.error("Private Error processing message:", error);
+            console.error("Error processing message:", error);
         }
     });
 
-    ws.on("error", (err) => console.error("Private WebSocket error:", err));
+    ws.on("error", (err) => console.error("WebSocket error:", err));
     ws.on("close", () => {
-        console.log("Private WebSocket closed, reconnecting...");
+        console.log("WebSocket closed, reconnecting...");
         setTimeout(createPrivateWebSocket, 5000);
     });
 
     return ws;
 }
 
-// Public WebSocket for DEPTH
-function createPublicWebSocket() {
-    const ws = new WebSocket(publicWsUrl);
-
-    ws.on("open", () => {
-        console.log("Connected to Pionex Public WebSocket");
-        const subscribeMessage = {
-            op: "SUBSCRIBE",
-            topic: "DEPTH",
-            symbol: process.env.SYMBOL,
-            limit: 10,
-        };
-        ws.send(JSON.stringify(subscribeMessage));
-    });
-
-    ws.on("message", async (data) => {
-        try {
-            const parsedData = JSON.parse(data);
-            console.log("Public Received:", parsedData);
-
-            if (parsedData.op === "PING") {
-                const pong = { op: "PONG", timestamp: parsedData.timestamp };
-                ws.send(JSON.stringify(pong));
-                console.log("Public Sent PONG:", pong);
-                return;
-            }
-
-            if (parsedData.type === "SUBSCRIBED") {
-                console.log(
-                    `Public Successfully subscribed to ${parsedData.topic} for ${parsedData.symbol}`
-                );
-                return;
-            }
-
-            if (parsedData.topic === "DEPTH") {
-                console.log("Depth update:", parsedData.data);
-            }
-
-            if (parsedData.type === "ERROR") {
-                console.error("Public Server error:", parsedData);
-            }
-        } catch (error) {
-            console.error("Public Error processing message:", error);
-        }
-    });
-
-    ws.on("error", (err) => console.error("Public WebSocket error:", err));
-    ws.on("close", () => {
-        console.log("Public WebSocket closed, reconnecting...");
-        setTimeout(createPublicWebSocket, 5000);
-    });
-
-    return ws;
+// Fetch current market price to set an unreachable limit price
+async function getCurrentPrice(symbol) {
+    const url = `${apiBaseUrl}/api/v1/market/tickers`;
+    try {
+        const response = await axios.get(url, { params: { symbol } });
+        const ticker = response.data.data.tickers[0];
+        return parseFloat(ticker.last); // Last traded price
+    } catch (error) {
+        console.error("Error fetching price:", error.message);
+        return null;
+    }
 }
 
-// Start both WebSockets
-createPrivateWebSocket();
-// Uncomment if you want to use the public WebSocket
-// createPublicWebSocket();
+// Place a test limit order with an unreachable price
+async function placeTestOrder() {
+    const endpoint = "/api/v1/trade/order";
+    const url = `${apiBaseUrl}${endpoint}`;
+    const symbol = "PI_USDT_PERP";
+    const timestamp = Date.now().toString();
 
-async function updateCodaTable(trade) {
-    const url = `https://coda.io/apis/v1/docs/${process.env.CODA_DOC_ID}/tables/${process.env.CODA_TABLE_ID}/rows`;
+    // Get current market price
+    const currentPrice = await getCurrentPrice(symbol);
+    if (!currentPrice) {
+        console.error("Failed to fetch current price, aborting order placement.");
+        return;
+    }
+
+    // Set limit price 10% below current price (unreachable for a buy order)
+    const limitPrice = (currentPrice * 0.9).toFixed(2); // Adjust precision as needed
+    console.log(`Current price: ${currentPrice}, Setting limit price: ${limitPrice}`);
+
+    const params = {
+        symbol: symbol,
+        side: "BUY", // Buy order
+        type: "LIMIT", // Limit order
+        size: "2", // 2 PI as requested
+        price: limitPrice, // Unreachable price
+        timestamp: timestamp,
+    };
+
+    // Sort params and create query string
+    const sortedParams = Object.keys(params)
+        .sort()
+        .map((key) => `${key}=${params[key]}`)
+        .join("&");
+    const pathWithQuery = `${endpoint}?${sortedParams}`;
+    const signature = crypto
+        .createHmac("sha256", apiSecret)
+        .update(pathWithQuery)
+        .digest("hex");
+
     const headers = {
-        Authorization: `Bearer ${process.env.CODA_API_TOKEN}`,
+        "PIONEX-KEY": apiKey,
+        "PIONEX-SIGNATURE": signature,
         "Content-Type": "application/json",
     };
 
-    const payload = {
-        rows: [
-            {
-                cells: [
-                    { column: "symbol", value: trade.symbol },
-                    { column: "side", value: trade.side },
-                    { column: "price", value: trade.price },
-                    { column: "size", value: trade.size },
-                    { column: "fee", value: trade.fee },
-                    { column: "id", value: trade.id },
-                    { column: "order_id", value: trade.order_id },
-                ],
-            },
-        ],
-        keyColumns: ["id"],
-    };
-
     try {
-        const response = await axios.post(url, payload, { headers });
-        console.log("Coda updated:", response.data);
+        const response = await axios.post(url, {}, { headers, params });
+        console.log("Limit order placed successfully:", response.data);
     } catch (error) {
         console.error(
-            "Error updating Coda:",
+            "Error placing order:",
             error.response ? error.response.data : error.message
         );
     }
 }
+
+// Start WebSocket and place test order
+async function runTest() {
+    createPrivateWebSocket();
+    console.log("Waiting 5 seconds for WebSocket to connect...");
+    await new Promise((resolve) => setTimeout(resolve, 5000)); // Give WebSocket time to subscribe
+    console.log("Placing test limit order...");
+    await placeTestOrder();
+}
+
+runTest();
 
 process.on("uncaughtException", (err) => {
     console.error("Uncaught exception:", err);
